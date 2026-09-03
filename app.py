@@ -49,6 +49,44 @@ RESIZE_PRESETS = {
 CROP_POSITIONS = ["Center", "Top", "Bottom", "Left", "Right"]
 
 
+# ----------------------------------------------------------------------
+# Callbacks for live Width <-> Height aspect-ratio linking
+# ----------------------------------------------------------------------
+# These run automatically when the user edits the Width or Height
+# number_input widgets (via on_change). They read the ORIGINAL uploaded
+# image's aspect ratio (stored in session_state when the image is loaded)
+# and update the *other* field in session_state before the next rerun.
+#
+# Important: Streamlit only fires on_change for the widget the user
+# actually interacted with. Programmatically updating the other widget's
+# session_state value here does NOT trigger its on_change callback, so
+# there is no infinite loop.
+def _sync_height_from_width():
+    if not st.session_state.get("maintain_aspect", True):
+        return
+    orig_w = st.session_state.get("original_width")
+    orig_h = st.session_state.get("original_height")
+    if not orig_w or not orig_h:
+        return
+    aspect_ratio = orig_w / orig_h
+    new_width = st.session_state.get("resize_width", orig_w)
+    new_height = max(1, int(round(new_width / aspect_ratio)))
+    st.session_state["resize_height"] = new_height
+
+
+def _sync_width_from_height():
+    if not st.session_state.get("maintain_aspect", True):
+        return
+    orig_w = st.session_state.get("original_width")
+    orig_h = st.session_state.get("original_height")
+    if not orig_w or not orig_h:
+        return
+    aspect_ratio = orig_w / orig_h
+    new_height = st.session_state.get("resize_height", orig_h)
+    new_width = max(1, int(round(new_height * aspect_ratio)))
+    st.session_state["resize_width"] = new_width
+
+
 def main():
     st.title("🖼️ Image Resizing & Cropping Tool")
     st.caption("Using OpenCV | Concept: Scaling and Cropping")
@@ -74,6 +112,12 @@ def main():
         return
 
     info = get_image_info(image)
+
+    # Store the ORIGINAL image's dimensions in session_state so the
+    # width<->height callbacks always calculate against the true
+    # original aspect ratio, not against a previously resized value.
+    st.session_state["original_width"] = info["width"]
+    st.session_state["original_height"] = info["height"]
 
     st.divider()
 
@@ -113,19 +157,51 @@ def main():
         dimension_choice = st.selectbox(
             "Choose predefined dimensions or Custom:",
             list(RESIZE_PRESETS.keys()) + ["Custom Dimensions"],
+            key="dimension_choice",
+        )
+
+        # "Maintain Aspect Ratio" checkbox — given a stable key so the
+        # width/height callbacks above can read its current value via
+        # st.session_state.get("maintain_aspect", True).
+        maintain_ratio = st.checkbox(
+            "☑ Maintain Aspect Ratio", value=True, key="maintain_aspect"
         )
 
         if dimension_choice == "Custom Dimensions":
+            # Initialize default values ONLY if not already set, so we
+            # don't overwrite the user's previous entries on rerun.
+            st.session_state.setdefault("resize_width", 800)
+            st.session_state.setdefault("resize_height", 600)
+
             c1, c2 = st.columns(2)
             with c1:
-                target_width = st.number_input("Width (px)", min_value=1, value=800, step=1)
+                st.number_input(
+                    "Width (px)",
+                    min_value=1,
+                    step=1,
+                    key="resize_width",
+                    on_change=_sync_height_from_width,
+                )
             with c2:
-                target_height = st.number_input("Height (px)", min_value=1, value=600, step=1)
+                st.number_input(
+                    "Height (px)",
+                    min_value=1,
+                    step=1,
+                    key="resize_height",
+                    on_change=_sync_width_from_height,
+                )
+
+            target_width = st.session_state["resize_width"]
+            target_height = st.session_state["resize_height"]
+
+            if maintain_ratio:
+                st.caption(
+                    f"Aspect ratio locked to original image "
+                    f"({st.session_state['original_width']} x {st.session_state['original_height']})."
+                )
         else:
             target_width, target_height = RESIZE_PRESETS[dimension_choice]
             st.write(f"Selected target size: **{target_width} x {target_height} px**")
-
-        maintain_ratio = st.checkbox("☑ Maintain Aspect Ratio", value=True)
 
         resize_mode = "Direct Resize"
         if maintain_ratio:
